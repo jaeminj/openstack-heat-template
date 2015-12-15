@@ -1,6 +1,9 @@
 heat_template_version: 2015-04-30
 
-description: Simple template to deploy a single compute instance
+description: >
+  Simple template to deploy a single compute instance
+  heat stack-create dummy --template-file m1.small.private.yml
+
 
 resources:
   my_instance:
