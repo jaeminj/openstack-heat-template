@@ -1,0 +1,232 @@
+heat_template_version: 2013-05-23
+
+description: Deploy hadoop cluster
+
+parameters:
+  key_name:
+    type: string
+    description: Name of keypair
+  instance_type:
+    type: string
+    description: Type of instance
+    default: smile
+    constraints:
+      - allowed_values: [m1.small, m1.medium, m1.large, smile]
+        description: instance_type must be one of m1.small, m1.medium or m1.large
+  image_name:
+    type: string
+    description: Name of image
+  network_label:
+    type: string
+    description: Name of image
+    default: private
+
+resources:
+  node01:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      name: node01
+      networks:
+        - network: private
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "update /etc/hosts"
+            node01_ip=$(ifconfig eth0 | awk -F':' '/inet addr/{split($2,_," ");print _[1]}')
+            cat << EOF >> /etc/hosts
+            $node01_ip node01
+            $node02_ip node02
+            $node03_ip node03
+            $node04_ip node04
+            $node05_ip node05
+            EOF
+
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            cat /usr/lib/hadoop/.ssh/id_rsa.pub >> /usr/lib/hadoop/.ssh/authorized_keys
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $node02_ip: { get_attr: [ node02, first_address ] }
+            $node03_ip: { get_attr: [ node03, first_address ] }
+            $node04_ip: { get_attr: [ node04, first_address ] }
+            $node05_ip: { get_attr: [ node05, first_address ] }
+  node02:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node02
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy: { get_param: key_name }
+  node03:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node03
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+  node04:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node04
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+  node05:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node05
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+
+outputs:
+  ssh_login:
+    description: ssh login to node01(master node)
+    value:
+      str_replace:
+        template: ssh hdfs@$node01_ip
+        params:
+          $node01_ip: { get_attr: [ node01, first_address ] }

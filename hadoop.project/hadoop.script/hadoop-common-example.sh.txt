@@ -1,0 +1,23 @@
+# WordCountを試してみる
+   hdfs@node01:~$ wget http://norvig.com/big.txt -P ~/
+   hdfs@node01:~$ hadoop fs -copyFromLocal ~/big.txt big.txt
+   hdfs@node01:~$ hadoop jar /usr/lib/hadoop/hadoop*examples*.jar wordcount big.txt output
+   hdfs@node01:~$ hadoop fs -ls
+   hdfs@node01:~$ hadoop fs -get output ~/local_output
+   hdfs@node01:~$ hadoop fs -rmr output
+   hdfs@node01:~$ less ~/local_output/part-r-00000
+# ユーザを追加してみる。試しにjohn
+   hdfs@node01:~$ sudo useradd john -m -s /bin/bash
+   hdfs@node01:~$ hadoop fs -mkdir /user/john
+   hdfs@node01:~$ hadoop fs -chown john:john /user/john
+# johnというユーザーでもWordCountができることを確認する
+   hdfs@node01:~$ sudo -i -u john
+   john@node01:~$ wget http://norvig.com/big.txt -P ~/
+   john@node01:~$ hadoop fs -copyFromLocal ~/big.txt big.txt
+   john@node01:~$ hadoop jar /usr/lib/hadoop/hadoop*examples*.jar wordcount big.txt output
+   john@node01:~$ hadoop fs -ls
+   john@node01:~$ hadoop fs -get output ~/local_output
+   john@node01:~$ hadoop fs -rmr output
+   john@node01:~$ less ~/local_output/part-r-00000
+# Hadoopを停止する
+   hdfs@node01:~$ ./bin/stop-all.sh

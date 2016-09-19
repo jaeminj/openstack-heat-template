@@ -1,0 +1,9 @@
+http://qiita.com/kjtanaka/items/cbc684bd407b65ba820b
+
+https://www.mellanox.com/related-docs/whitepapers/wp_hadoop_on_cephfs.pdf
+http://docs.ceph.com/docs/jewel/cephfs/hadoop/
+
+
+https://github.com/legatoo/hadoop-install-scripts
+http://legato.ninja/2014/11/12/Install-Yarn-on-Ubuntu-Cluster-via-Scripts/
+

@@ -1,0 +1,319 @@
+#
+# This is a Talligent Heat template for deploying Openbook.
+# Default user/pass for the Openbook UI is: openbook / Tall!gent
+# supports Juno, Kilo
+
+heat_template_version: 2013-05-23
+
+description: >
+  Talligent Heat template for deploying a single node
+  Openbook instance.
+
+parameter_groups:
+- parameters:
+  - key_name
+  - flavor
+  - image
+  - private_net
+  - public_net
+  - sharefile_user
+  - sharefile_pass
+
+parameters:
+  key_name:
+    type: string
+    description: Name of an existing key pair to use for the server
+    constraints:
+      - custom_constraint: nova.keypair
+  flavor:
+    type: string
+    description: Flavor for the server to be created
+    default: m1.medium
+    constraints:
+      - custom_constraint: nova.flavor
+  image:
+    type: string
+    description: Image ID or image name to use for the server
+    constraints:
+      - custom_constraint: glance.image
+  private_net:
+    type: string
+    description: Name of the private network for the compute server
+    default: private
+    constraints:
+      - custom_constraint: neutron.network
+  public_net:
+    type: string
+    description: Name of the public network for the compute server
+    default: public
+    constraints:
+      - custom_constraint: neutron.network
+  sharefile_user:
+    type: string
+    label: Sharefile Username
+    description: Username for accessing Talligent Sharefile
+    default: none
+  sharefile_pass:
+    type: string
+    label: Sharefile Password
+    description: Password for accessing Talligent Sharefile
+    default: none
+    hidden: true
+  alt_download_url:
+    type: string
+    label: Alternate Openbook download URL
+    description: Alternative download location of Openbook zip if Sharefile credentials are not provided
+    default: none
+
+resources:
+  wait_condition:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: { get_resource: wait_handle }
+      count: 1
+      timeout: 3600
+
+  wait_handle:
+    type: OS::Heat::WaitConditionHandle
+  
+  administrative_password:
+    type: OS::Heat::RandomString
+  
+  external_access:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: openbook-group
+      description: Enable access to Openbook and SSH access
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 8080
+          port_range_max: 8080
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 8443
+          port_range_max: 8443
+  public_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_param: private_net }
+      security_groups:
+      - {get_resource: external_access}
+  
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: { get_param: public_net }
+      port_id: { get_resource: public_port }
+
+  server:
+    type: OS::Nova::Server
+    properties:
+      name: openbook-01
+      key_name: { get_param: key_name }
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      networks:
+        - port: { get_resource: public_port }
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          params:
+            $admin_password: { get_attr: [administrative_password, value] }
+            wc_notify: { get_attr: ['wait_handle', 'curl_cli'] }
+            $floating_ip: { get_attr: [ floating_ip, floating_ip_address ] }
+            $sharefile_user: { get_param: sharefile_user }
+            $sharefile_pass: { get_param: sharefile_pass }
+            $alt_download_url: { get_param: alt_download_url }
+          template: |
+            #!/bin/bash -ex
+            
+            echo "$floating_ip  $(hostname)" >> /etc/hosts
+            if [ -f /etc/lsb-release ]; then
+              DISTRO="Ubuntu"
+            elif [ -f /etc/redhat-release ]; then
+              DISTRO="CentOS"
+            else
+              echo "Unable to determine if Ubuntu or CentOS"
+              exit 1
+            fi
+            
+            # Set the max heap size
+            JVM_HEAP_PERCENT=50
+            TOTAL_MEM=$(free -m | awk '/Mem:/ {print $2}')
+            let JVM_HEAP=$TOTAL_MEM*$JVM_HEAP_PERCENT/100
+
+            case $DISTRO in
+                'Ubuntu')
+                    
+                    MYSQL_CONF_FILE='/etc/mysql/my.cnf'
+                    TOMCAT_DIR='/var/lib/tomcat7'
+                    TOMCAT_CONFIG='/etc/tomcat7/server.xml'
+                    
+                    # Add MariaDB and OpenJDK 8 repos
+                    # Check for mariadb availability before adding key and repo
+                    MARIADB_AVAILABLE=$(aptitude -F "%p" search mariadb-client-core-10.0)
+                    if [ "" == "$MARIADB_AVAILABLE" ]; then
+                        apt-get install software-properties-common
+                        apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xcbcb082a1bb943db
+                        add-apt-repository 'deb http://ftp.osuosl.org/pub/mariadb/repo/10.0/ubuntu trusty main'
+                    fi
+
+                    # Check for java-8 availability before adding repo
+                    JAVA_AVAILABLE=$(aptitude -F "%p" search openjdk-8-jdk)
+                    if [ "" == "$JAVA_AVAILABLE" ]; then
+                        apt-get install software-properties-common
+                        add-apt-repository -y ppa:openjdk-r/ppa
+                    fi
+
+                    apt-get update
+
+                    # Install OpenJDK 8
+                    apt-get install -y openjdk-8-jdk
+                    ln -s /usr/lib/jvm/java-8-openjdk-amd64 /usr/lib/jvm/default-java
+                    update-ca-certificates -f
+                    
+                    # MariaDB
+                    export DEBIAN_FRONTEND=noninteractive
+                    
+                    # configure/confirm the default root password during installation
+                    debconf-set-selections <<< 'mariadb-server-10.0 mysql-server/root_password password $admin_password'
+                    debconf-set-selections <<< 'mariadb-server-10.0 mysql-server/root_password_again password $admin_password'
+                    apt-get -y install mariadb-server
+                    
+                    ### TOMCAT ###
+                    apt-get install -y tomcat7 mariadb-client-core-10.0 ntp unzip
+                    sed -i "s/Xmx.*\ /Xmx${JVM_HEAP}m /g" /etc/default/tomcat7
+                    sed -i '/^JAVA_OPTS/ s/"$/ -Djsse.enableSNIExtension=false -Djava.security.egd=file:\/dev\/urandom"/g' /etc/default/tomcat7
+                    rm -rf ${TOMCAT_DIR}/webapps/ROOT
+                    service tomcat7 stop
+
+                    ;;
+                
+                'CentOS')
+                    
+                    MYSQL_CONF_FILE='/etc/my.cnf.d/server.cnf'
+                    TOMCAT_DIR='/var/lib/tomcat'
+                    TOMCAT_CONFIG='/etc/tomcat/server.xml'
+                    
+                    # Add MariaDB repo
+                    cat << EOF >> /etc/yum.repos.d/MariaDB.repo
+                    [mariadb]
+                    name = MariaDB
+                    baseurl = http://yum.mariadb.org/10.1/centos7-amd64
+                    gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+                    gpgcheck=1
+            EOF
+                    sed -i 's/^        //g' /etc/yum.repos.d/MariaDB.repo
+                    
+                    # Install Java 8, MariaDB, and Tomcat
+                    yum -y install java-1.8.0-openjdk tomcat MariaDB-server MariaDB-client wget unzip ntp
+                    systemctl start mariadb
+                    mysql -uroot mysql <<-EOF
+                    update user set password=password('$admin_password') where user='root';
+                    flush privileges;
+            EOF
+                    
+                    echo "JAVA_OPTS='-Djava.awt.headless=true -Xmx${JVM_HEAP}m -Djava.security.egd=file:/dev/urandom'" >> /etc/sysconfig/tomcat
+                    ;;
+            esac
+            
+            cat << EOF >> /root/.my.cnf
+            [mysql]
+            user=root
+            password=$admin_password
+            EOF
+            
+            # mysql_secure_installation  # this asks several questions
+            ## Apparently, we can do these queries manually, instead
+            mysql -uroot -p$admin_password <<-EOF
+            DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+            DELETE FROM mysql.user WHERE User='';
+            DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';
+            FLUSH PRIVILEGES;
+            EOF
+            
+            # Set binglog format to MIXED (defaults to STATEMENT)
+            sed -i "/\[mysqld\]/a\binlog_format = MIXED" $MYSQL_CONF_FILE
+            /etc/init.d/mysql restart
+            
+            # Generate key
+            JAVA_HOME=$(readlink -f /usr/bin/java | sed 's|bin/java||')
+            keytool -genkey -keyalg RSA -alias openbook \
+            -dname "CN=$(hostname), O=Talligent, L=Austin, S=Texas, C=US" \
+            -ext san=ip:$floating_ip,ip:127.0.0.1 \
+            -keystore ${JAVA_HOME}/lib/security/cacerts \
+            -storepass changeit \
+            -validity 360 \
+            -keysize 2048 \
+            -keypass changeit
+            
+            
+            # Enable 8443 for tomcat
+            SSL_MATCH='<Connector port="8443" .*'
+            perl -i -pe '
+                if (/<!--/) { $_ .= <> while !/-->/;
+                    s[<!--\n\s+(<Connector port="8443" .*\n.*\n.*\n)\s+-->][$1];
+                }' $TOMCAT_CONFIG
+            
+            sed -i "/$SSL_MATCH/a\               keystoreFile='${JAVA_HOME}/lib/security/cacerts'\n\
+                           keystorePass='changeit'" $TOMCAT_CONFIG
+            
+            
+            # Download and install Openbook
+            # Check for alternate download URL first
+            if [ "none" != "$alt_download_url" ]; then
+                if [[ "$alt_download_url" =~ "Openbook" ]]; then
+                    wget -q "$alt_download_url" -P "/tmp/"
+                else
+                    wget -q -r "$alt_download_url" -P "/tmp/"
+                    mv /tmp/$(echo $alt_download_url | awk -F\/ '{print $3}')/Openbook*.zip /tmp/
+                fi
+            else
+                export TOKEN=$(curl -s -X POST "https://talligent.sharefile.com/oauth/token" \
+                             -H "Content-Type: application/x-www-form-urlencoded" \
+                             -d "grant_type=password&client_id=eC8y8eeoeunxzOizZq2oeknIVfA9Jyjg&client_secret=PehmEqzEgKuGm2XOZWXIOUY3GyrKcfSmNtwPptPwt0tWxihs&username=$sharefile_user&password=$sharefile_pass" | python -c 'import sys, json; print json.load(sys.stdin)["access_token"]')
+                export ITEM=$(curl -s -k 'https://talligent.sf-api.com/sf/v3/Items/Search?query=.zip' -H "Authorization: Bearer $TOKEN" | python -c 'import sys, json; print json.load(sys.stdin)["Results"][0]["ItemID"]')
+                curl -s -k -L -o "/tmp/Openbook.zip" "https://talligent.sf-api.com/sf/v3/Items($ITEM)/Download" -H "Authorization: Bearer $TOKEN"
+            fi
+
+            unzip -q /tmp/Openbook*.zip -d /tmp
+            unzip -q /tmp/Openbook-*/Openbook.war -d ${TOMCAT_DIR}/webapps/Openbook
+            
+            mysql -uroot -p$admin_password < ${TOMCAT_DIR}/webapps/Openbook/WEB-INF/classes/db/MySQL/create_openbook_schemas.sql
+            
+            if [[ "$DISTRO" == "Ubuntu" ]]; then
+                chown -R tomcat7.tomcat7 ${TOMCAT_DIR}/webapps/Openbook
+                service tomcat7 start
+            elif [[ "$DISTRO" == "CentOS" ]]; then
+                chown -R tomcat.tomcat ${TOMCAT_DIR}/webapps/Openbook
+                systemctl start tomcat
+                systemctl enable tomcat
+            else
+                exit 1
+            fi
+            
+            # Sleep a little bit to allow tomcat to finish initial liquibase run for Openbook
+            sleep 60
+            
+            wc_notify --insecure --data-binary '{"status": "SUCCESS"}'
+
+outputs:
+  Openbook_admin:
+    description: Openbook administrative user
+    value: openbook
+  Openbook_admin_password:
+    description: Openbook administrative user password
+    value: Tall!g3nt
+  Openbook_URL:
+    description: The URL to access the Openbook UI
+    value:
+      str_replace:
+        template: https://host_ip:8443/Openbook
+        params:
+          host_ip: { get_attr: [ floating_ip, floating_ip_address ] }
+

@@ -1,0 +1,315 @@
+heat_template_version: 2013-05-23
+
+description: Deploy hadoop cluster
+
+parameters:
+  key_name:
+    type: string
+    description: Name of keypair
+  instance_type:
+    type: string
+    description: Type of instance
+    default: smile
+    constraints:
+      - allowed_values: [m1.small, m1.medium, m1.large, smile]
+        description: instance_type must be one of m1.small, m1.medium or m1.large
+  image_name:
+    type: string
+    description: Name of image
+  network_label:
+    type: string
+    description: Name of image
+    default: private
+
+resources:
+  kdc1:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      name: kdc1
+      networks:
+        - network: private
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "installing krb5"
+            apt-get -y install krb5-kdc krb5-admin-server
+
+            cat << EOF >> /etc/krb5.conf
+            [logging]
+             default = FILE:/var/log/krb5libs.log
+             kdc = FILE:/var/log/krb5kdc.log
+             admin_server = FILE:/var/log/kadmind.log
+
+            [libdefaults]
+             default_realm = BLOODGUY.COM
+             dns_lookup_realm = false
+             dns_lookup_kdc = false
+             ticket_lifetime = 24h
+             renew_lifetime = 7d
+             forwardable = true
+
+            [realms]
+             BLOODGUY.COM = {
+              kdc = kdc1.bloodguy.com:88
+              kdc = kdc2.bloodguy.com:88
+              admin_server = kdc1.bloodguy.com:749
+              default_domain = bloodguy.com
+             }
+
+            [domain_realm]
+             .bloodguy.com = BLOODGUY.COM
+             bloodguy.com = BLOODGUY.COM
+            EOF
+
+            cat << EOF >> /var/kerberos/krb5kdc/kdc.conf
+            [kdcdefaults]
+             kdc_ports = 88
+             kdc_tcp_ports = 88
+
+            [realms]
+             BLOODGUY.COM = {
+              acl_file = /var/kerberos/krb5kdc/kadm5.acl
+              dict_file = /usr/share/dict/words
+              admin_keytab = /var/kerberos/krb5kdc/kadm5.keytab
+              supported_enctypes = aes256-cts:normal aes128-cts:normal des3-hmac-sha1:normal arcfour-hmac:normal des-hmac-sha1:normal des-cbc-md5:normal des-cbc-crc:normal des-cbc-crc:v4 des-cbc-crc:afs3
+             }
+             EOF
+            # 2016-05-30 By jaeminj@gmail.com 
+            #
+            echo tlgjadyd > kdb5.master.token
+            kdb5_util create -s -r pie_realm -m kdb5.master.token
+            cat << EOF > /var/kerberos/krb5kdc/kadm5.acl
+            */admin@BLOODGUY.COM  *
+            EOF
+
+            service kadmin start
+            /usr/kerberos/sbin/kadmin.local -q "addprinc admin/admin"
+            service krb5kdc start
+
+
+            echo "update /etc/hosts"
+            node01_ip=$(ifconfig eth0 | awk -F':' '/inet addr/{split($2,_," ");print _[1]}')
+            cat << EOF >> /etc/hosts
+            $node01_ip node01
+            $node02_ip node02
+            $node03_ip node03
+            $node04_ip node04
+            $node05_ip node05
+            EOF
+
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            cat /usr/lib/hadoop/.ssh/id_rsa.pub >> /usr/lib/hadoop/.ssh/authorized_keys
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+  node01:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      name: node01
+      networks:
+        - network: private
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "update /etc/hosts"
+            node01_ip=$(ifconfig eth0 | awk -F':' '/inet addr/{split($2,_," ");print _[1]}')
+            cat << EOF >> /etc/hosts
+            $node01_ip node01
+            $node02_ip node02
+            $node03_ip node03
+            $node04_ip node04
+            $node05_ip node05
+            EOF
+
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            cat /usr/lib/hadoop/.ssh/id_rsa.pub >> /usr/lib/hadoop/.ssh/authorized_keys
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $node02_ip: { get_attr: [ node02, first_address ] }
+            $node03_ip: { get_attr: [ node03, first_address ] }
+            $node04_ip: { get_attr: [ node04, first_address ] }
+            $node05_ip: { get_attr: [ node05, first_address ] }
+  node02:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node02
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy: { get_param: key_name }
+  node03:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node03
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+  node04:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node04
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+  node05:
+    type: OS::Nova::Server
+    properties:
+      key_name: { get_param: key_name }
+      image: { get_param: image_name }
+      flavor: { get_param: instance_type }
+      networks:
+        - network: private
+      name: node05
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "Install Hadoop Packages"
+            add-apt-repository -y ppa:webupd8team/java
+            add-apt-repository -y ppa:hadoop-ubuntu/stable
+            apt-get update && sudo apt-get -y upgrade
+            echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+            echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections
+            apt-get -y install oracle-java7-installer
+            apt-get -y install hadoop
+            echo "export JAVA_HOME=/usr/lib/jvm/java-7-oracle" >> /usr/lib/hadoop/conf/hadoop-env.sh
+            for file in {core-site.xml,hdfs-site.xml,mapred-site.xml,masters,slaves}; do
+              wget https://raw.github.com/kjtanaka/heat_templates/master/hadoop/conf/$file \
+                  -N -P /usr/lib/hadoop/conf
+            done
+            for dir in {/data01,/data02,/data03}; do
+              mkdir $dir
+              chown hdfs:hdfs $dir
+            done
+            chown -R hdfs:hdfs /var/lib/hadoop/cache
+            echo "hdfs	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers
+            sudo -u hdfs ssh-keygen -N "" -C "hdfs" -f /usr/lib/hadoop/.ssh/id_rsa
+            cp /home/ec2-user/.ssh/authorized_keys /usr/lib/hadoop/.ssh/
+            chown hdfs:hdfs /usr/lib/hadoop/.ssh/authorized_keys
+          params:
+            $dummy : { get_param: key_name }
+
+outputs:
+  ssh_login:
+    description: ssh login to node01(master node)
+    value:
+      str_replace:
+        template: ssh hdfs@$node01_ip
+        params:
+          $node01_ip: { get_attr: [ node01, first_address ] }
